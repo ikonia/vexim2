@@ -1,0 +1,150 @@
+# This file explains how to install Vexim2 onto a Debian based system ( this may be used for ubuntu too, but with 16.04 shipping with php 7 by default some testing is needed)
+
+
+# Installation
+this process assumes you are running a Debian 7 or later install. This process also assumes you are confident managing your own repos and sources and that you are responsible for making sure any 3rd party repos do not conflict with the main debian repos. All software in this process will be provided from the Debian main repo.
+
+
+## Packages
+
+This documents the steps needed to get the software needed to run and support vexim2. The guide assumes you are running all the services on a single host, however these services can be split out to run on seperate hosts depend on your needs and estate. eg: Mysql could be running on a different host to the Vexim2 web server, with clamd running on a seperate host, all communicting via TCP. This guide assumes a single host install though.
+
+### Required Packages
+
+First we need to install the packages that vexim will use for a standard functionality install.
+Exim is the default MTA on a Debian install, so most of the exim dependencies should already be met
+
+```
+apt-get install apache2 exim4-daemon-heavy mysql-server libapache2-mod-php5 php5-mysql php5-imap
+
+This command will install exim, a mysql server (assuming you don't have one already running) Apache and PHP. It will also install additional packages which are dependencies on this package, this should be be a concern. It will also remove some packages such as the default exim4-daemon-light package as this will conflict with exim4-daemon-heavy. You will also be presented with an ncurses interface to setup your mysql servers default config if you do not have a mysql server already running. 
+
+This now gives you a sane platform to build vexim2 ontop of.
+
+### Optional Packages
+
+If you want additional functionality such as spam filtering, antivirus scanning or mailing list functionality, you'll need additional packages.
+
+```
+apt-get install clamav-daemon clamav-freshclam spamassassin
+
+This will install clam antivirus scanner and spamassassin that you can build into your vexim2 environment should you require it. (note these can also be run on seperate hosts and accessed via vexim2's application stack via the network - they are all network services).
+
+
+## User Accounts
+
+You should create a new user account to whom the virtual mailboxes will belong. Since you do not want anyone to be able to login using that account, you should also disable logging in for that user. Here are the command lines to do that. This manual assumes you want to have your virtual mailboxes in /var/vmail. If you want them elsewhere, adjust the commands. After the user and group are created, find their uid and gid using the last command and memorize these values:
+
+This command will add a system user with a locked password and non-interactive shell. The user is called vexim. This will be the user that controls your vexim mail at a system service level
+
+```
+adduser --system --home /var/vmail --disabled-password --disabled-login --group vexim
+
+## Databases setup and authentication:
+When creating the databases you have two options. You can either use the SQL command files, or the perl script. If you are creating new databases, it is *STRONGLY* recommend you use the SQL command files. They are much simpler. However, if you are migrating from Virtual Exim 1.x to 2.x, you will need to use the perl script to migrate the data.
+
+**IMPORTANT NOTE:** if you have a database called "vexim" in MySQL or PostgreSQL, you should back it up first. The SQL command files assume that the database with that name does not exist and has to be created. You can edit the files to use a different database name, but you are still strongly advised to make a backup of the "vexim" database – just in case.
+
+### MySQL:
+This release bundle contains a file "vexim2/setup/mysql.sql". This file provides the database schema used by vexim. You will have to import it into MySQL, but before that, some changes must be made to this file in order for it to work.
+
+Open this file in a text editor and look for the word "CHANGE". You will find the following two lines not far from the top (lines 15-16):
+
+uid              smallint(5)   unsigned  NOT NULL  default 'CHANGE',
+gid              smallint(5)   unsigned  NOT NULL  default 'CHANGE',
+```
+Replace "CHANGE" with the uid and gid of your freshly created "vexim" user (see the System user step). This will be the default user to own mailbox files for new domains. (you can see these if you forget with the command 'id vexim' )
+
+Further below you will find the following section on lines 133 and 134
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON `vexim`.* to "vexim"@"localhost"
+    IDENTIFIED BY 'CHANGE';
+FLUSH PRIVILEGES;
+
+Replace the word "CHANGE" with a secure password - It will be used both by the Exim MTA and the web interface to access the database.
+(if you are running Mysql on a seperate host, change the word localhost to be the FQDN of the host mysql is running on)
+
+If the crypt() function on your system produces DES hashes, you will also have to uncomment the appropriate lines, as noted by the comments, at the end of mysql.sql.
+
+With the necessary changes made, you should connect to the mysql instance as a user with create database privileges (normally root) and execute the following command line to initialize the vexim database:
+
+```
+mysql -u root -h localhost -p < vexim2/setup/mysql.sql
+
+substitute root and localhost if your username or mysql host are different
+
+This should now leave you with a vexim2 database ready for use 
+
+## Web Server Setup
+
+This section will walk you through how to setup the web server component for a vexim install. Currently only Apache web server is a supported configuration
+
+### Apache setup
+
+In this release distribution is a directory called 'vexim'. You have two options:
+* Copy this directory into your current DocumentRoot for your domain, and optionally rename the directory.
+* Set up a new VirtualHost and point the DocumentRoot to the vexim directory.
+
+#### Default website setup
+Debian ships apache from it's own repos with a very specific method of managing and running sites or "vhosts" meaning virtual hosts
+apache's configuration for the virtual hosts is stored in the /etc/apache2/sites-available directory. Debian ships with two example files
+000-default.conf and default-ssl.conf. These are valid hosts and the "default" site your apache server will respond to unless you configure additional sites. The numbering prefix shows the order in which they are parsed by apache.
+
+If you wish to use the default website and to host vexim2 copy the vexim directory into the default web root (DocumentRoot in the coniguration file) of the default vhost (000-default.conf).
+
+for example
+
+```
+cp -R vexim /var/www/html
+
+this will put the vexim directory in your apache servers default website root. If you visit your apache webserver /vexim you are then accessing the vexim directory you have just copied into place.
+
+The permissions will need to be resolved to make sure they are readable by the web server. A starting point is to make the directory world readable.
+
+```
+chmod -R 755 /var/www/html/vexim
+
+You can futher tighten this down by changing group ownership and user ownership and restricting the permissions, for example
+
+```
+chown -R root:www-data /var/www/html/vexim
+
+This will set the vexim directory to be owned by the root user, and the apache web server process group.
+Now that this is done we can lock it down futher by making the owner (root) the only person able to edit files, and the web server able to only read the directory, and remove the world access from everyone
+
+```
+chmod -R 750 /var/www/html/vexim
+
+This will protect vexim from exploits from the webserver changing the configuration files. This is just an example permissions set, it can be as restricted or as open as you see fit
+
+#### New Vhost Setup
+
+If you want setup a new virtual host to serve the vexim application you can use these steps.
+
+copy the default vhost from the apache site-available directory to a new file to use as a example. The priority number of the site will need to be increased above the default number. We will select 25 as an example, the name of the file should normally reflect the a reference to what it's hosting.
+
+```
+cp /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-available/25-vexim.conf
+
+Once this file is in place edit the file with a text editor. The parameters in the file will need to be changed to reflect your peronal estate. 
+Parameters 
+ * DocumentRoot will need to be updated to where you want to store the vexim codebase for hosting.
+ * ServerName will need to be uncommented and set to the FQDN that you wish to access vexim on.
+
+From this point you will need to copy the vexim directory supplied from the version distribution into the newly created DocumentRoot directory you set and created
+
+The apache webserver will need to be able to read the vexim application code you have just moved into place. Examples of this can be seen a few lined above this in the "Default website setup" section
+
+At this stage you can now enable the site within the Debian apache configuration, to make it available for hosting.
+
+```
+a2ensite vexim
+
+(note the .conf extension is not included in this command).
+
+
+using either the default site or a new specific vhost  should work equally well.
+
+As you will be sending usernames / passwords over the network to your vexim host, you should strongly look at configuring the webserver to only serve the vexim interface over an SSL encypted connection. 
+
+##### SSL host setup
